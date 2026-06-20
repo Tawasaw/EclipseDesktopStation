@@ -23,7 +23,8 @@ practice and diagnostics — **not for official competition use**.
   - Activate any config on the hub.
   - Upload a local XML file (activates on save — RC behavior).
   - Delete configs.
-- JSONL session logs written to the OS log directory for field debugging.
+- JSONL session logs (opt-in) for field debugging — disabled by default,
+  enabled via a checkbox by the IP box.
 
 ## Download
 
@@ -91,7 +92,9 @@ src-tauri/
 
 ## Debug Logs
 
-Session logs are written to:
+Session logging is **disabled by default** — no files are written until you
+tick the **Enable logging** checkbox next to the IP address box. While enabled,
+each session is written to:
 
 | OS      | Path |
 |---------|------|
@@ -99,8 +102,9 @@ Session logs are written to:
 | Linux   | `~/.local/state/EclipseDesktopStation/logs/session-<ts>.jsonl` |
 | Windows | `%LOCALAPPDATA%\EclipseDesktopStation\logs\session-<ts>.jsonl` |
 
-The log path is shown in the app's top bar. Logging is best-effort — the app
-runs normally even if the log directory cannot be created.
+The active log path is shown in the app's top bar while logging is on. Logging
+is best-effort — the app runs normally even if the log directory cannot be
+created.
 
 Key event names: `connect`, `disconnect`, `tx_command`, `rx_command`,
 `rx_telemetry`, `robot_stacktrace`, `robot_toast`, `peer_discovery`,

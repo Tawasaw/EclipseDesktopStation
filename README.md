@@ -6,6 +6,8 @@ This is a Tauri + Rust app that connects to a Robot Controller over the FTC
 Robocol UDP protocol. Targets FTC SDK 11.1 (Robocol version 124). Intended for
 practice and diagnostics — **not for official competition use**.
 
+![EclipseDesktopStation screenshot](docs/screenshot.jpg)
+
 ## Features
 
 - Connect to a Robot Controller by IP address.

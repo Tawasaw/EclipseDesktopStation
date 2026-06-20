@@ -55,6 +55,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Set version from tag
+        shell: bash
+        run: node scripts/set-version.mjs "${{ github.ref_name }}"
+
       - name: Generate app icons
         run: npm run tauri icon src-tauri/icons/icon_source.png
 

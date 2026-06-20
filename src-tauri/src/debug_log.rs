@@ -5,58 +5,82 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Per-session JSONL log. Logging is best-effort: if the log directory or file
-/// cannot be created the app still runs normally, with logging disabled.
+/// Per-session JSONL log. Disabled by default — no file is created until the
+/// user opts in via the UI. Logging is best-effort: if the log directory or
+/// file cannot be created the app still runs normally, with logging disabled.
 pub struct SessionLog {
-    path: Option<PathBuf>,
-    file: Mutex<Option<File>>,
+    /// `Some` while logging is enabled, holding the open session file and its
+    /// path. `None` when logging is disabled (the default).
+    sink: Mutex<Option<LogSink>>,
+}
+
+struct LogSink {
+    path: PathBuf,
+    file: File,
 }
 
 impl SessionLog {
+    /// Create a log in the disabled state. Call [`SessionLog::enable`] to start
+    /// writing a session file.
     pub fn new() -> Self {
-        match Self::open() {
-            Some((path, file)) => Self {
-                path: Some(path),
-                file: Mutex::new(Some(file)),
-            },
-            None => Self {
-                path: None,
-                file: Mutex::new(None),
-            },
+        Self {
+            sink: Mutex::new(None),
         }
     }
 
-    fn open() -> Option<(PathBuf, File)> {
-        let log_dir = log_dir()?;
-        fs::create_dir_all(&log_dir).ok()?;
-        let path = log_dir.join(format!("session-{}.jsonl", now_ms()));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()?;
-        Some((path, file))
+    /// Start a fresh session file if logging is not already enabled. Returns the
+    /// resulting path string (or a disabled/unavailable marker).
+    pub fn enable(&self) -> String {
+        let mut guard = self.sink.lock().expect("log lock");
+        if guard.is_none() {
+            if let Some((path, file)) = open_session_file() {
+                *guard = Some(LogSink { path, file });
+            }
+        }
+        match guard.as_ref() {
+            Some(sink) => sink.path.display().to_string(),
+            None => "(logging unavailable)".to_string(),
+        }
+    }
+
+    /// Stop logging and close the current session file.
+    pub fn disable(&self) {
+        let mut guard = self.sink.lock().expect("log lock");
+        *guard = None;
     }
 
     pub fn path_string(&self) -> String {
-        match &self.path {
-            Some(path) => path.display().to_string(),
+        let guard = self.sink.lock().expect("log lock");
+        match guard.as_ref() {
+            Some(sink) => sink.path.display().to_string(),
             None => "(logging disabled)".to_string(),
         }
     }
 
     pub fn record(&self, event: &str, detail: Value) {
-        let entry = json!({
-            "ts_ms": now_ms(),
-            "event": event,
-            "detail": detail,
-        });
-        if let Ok(mut guard) = self.file.lock() {
-            if let Some(file) = guard.as_mut() {
-                let _ = writeln!(file, "{entry}");
+        if let Ok(mut guard) = self.sink.lock() {
+            if let Some(sink) = guard.as_mut() {
+                let entry = json!({
+                    "ts_ms": now_ms(),
+                    "event": event,
+                    "detail": detail,
+                });
+                let _ = writeln!(sink.file, "{entry}");
             }
         }
     }
+}
+
+fn open_session_file() -> Option<(PathBuf, File)> {
+    let log_dir = log_dir()?;
+    fs::create_dir_all(&log_dir).ok()?;
+    let path = log_dir.join(format!("session-{}.jsonl", now_ms()));
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    Some((path, file))
 }
 
 /// Per-OS directory for session logs, outside the app bundle so logging works

@@ -26,7 +26,7 @@ app.innerHTML = `
       <div class="brand">
         <div class="mark">FTC</div>
         <div>
-          <h1>EclipseDesktopStation</h1>
+          <h1>EclipseDesktopStation <span id="appVersion" class="version"></span></h1>
           <p id="statusLine">Disconnected</p>
           <p id="logPath" class="log-path"></p>
         </div>
@@ -35,6 +35,10 @@ app.innerHTML = `
         <input id="robotIp" value="192.168.43.1" aria-label="Robot Controller IP" />
         <button type="submit">Connect</button>
         <button id="disconnectBtn" type="button">Disconnect</button>
+        <label class="log-toggle" title="Write a session log to disk for debugging">
+          <input id="logToggle" type="checkbox" />
+          <span>Enable logging</span>
+        </label>
       </form>
     </section>
 
@@ -141,6 +145,8 @@ const elements = {
   bannerTitle: document.querySelector("#bannerTitle"),
   bannerBody: document.querySelector("#bannerBody"),
   bannerDismiss: document.querySelector("#bannerDismiss"),
+  appVersion: document.querySelector("#appVersion"),
+  logToggle: document.querySelector("#logToggle"),
 };
 
 elements.connectForm.addEventListener("submit", async (event) => {
@@ -550,11 +556,35 @@ function setStatus(kind, message) {
 
 renderDisconnected();
 
-invoke("get_log_path")
-  .then((path) => {
-    state.logPath = path;
-    elements.logPath.textContent = `Log: ${path}`;
+invoke("get_app_version")
+  .then((version) => {
+    elements.appVersion.textContent = version ? `v${version}` : "";
   })
   .catch(() => {
-    elements.logPath.textContent = "";
+    elements.appVersion.textContent = "";
   });
+
+// Logging is disabled by default. Reflect the current (disabled) state, then
+// let the checkbox enable/disable it on demand.
+function renderLogPath(path) {
+  // The backend returns "(logging disabled)" / "(logging unavailable)" when no
+  // session file is active — show nothing rather than that marker.
+  const active = path && !path.startsWith("(");
+  state.logPath = active ? path : "";
+  elements.logPath.textContent = active ? `Log: ${path}` : "";
+}
+
+invoke("get_log_path")
+  .then(renderLogPath)
+  .catch(() => renderLogPath(""));
+
+elements.logToggle.addEventListener("change", async () => {
+  const enabled = elements.logToggle.checked;
+  try {
+    const path = await invoke("set_logging", { enabled });
+    renderLogPath(path);
+  } catch {
+    // Revert the checkbox if the toggle failed.
+    elements.logToggle.checked = !enabled;
+  }
+});

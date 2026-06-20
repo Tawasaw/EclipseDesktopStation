@@ -137,6 +137,13 @@ h1 {
   line-height: 1.1;
 }
 
+.version {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9aaa1;
+  vertical-align: middle;
+}
+
 h2 {
   font-size: 16px;
 }
@@ -178,6 +185,23 @@ h2 {
 
 .connect input {
   padding: 0 10px;
+}
+
+.log-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 12px;
+  color: #c9aaa1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.log-toggle input {
+  cursor: pointer;
+  accent-color: #ff5b1f;
 }
 
 .status-grid {

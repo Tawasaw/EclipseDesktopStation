@@ -16,11 +16,11 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        let log = SessionLog::new();
-        log.record("app_started", serde_json::json!({}));
+        // Logging is disabled by default; the user opts in from the UI, at
+        // which point a session file is created.
         Self {
             client: Mutex::new(None),
-            log: Arc::new(log),
+            log: Arc::new(SessionLog::new()),
         }
     }
 }
@@ -201,6 +201,25 @@ fn get_log_path(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.log.path_string())
 }
 
+#[tauri::command]
+fn set_logging(state: State<'_, AppState>, enabled: bool) -> Result<String, String> {
+    if enabled {
+        let path = state.log.enable();
+        state.log.record("logging_enabled", serde_json::json!({}));
+        Ok(path)
+    } else {
+        // Record before disabling so the final event lands in the session file.
+        state.log.record("logging_disabled", serde_json::json!({}));
+        state.log.disable();
+        Ok(state.log.path_string())
+    }
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 fn with_client<T>(
     state: &State<'_, AppState>,
     action: impl FnOnce(&RobocolClient) -> Result<T, String>,
@@ -227,7 +246,9 @@ pub fn run() {
             activate_config,
             delete_config,
             clear_robot_message,
-            get_log_path
+            get_log_path,
+            set_logging,
+            get_app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running EclipseDesktopStation");

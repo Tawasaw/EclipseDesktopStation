@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EclipseDesktopStation",
+  "version": "0.1.0",
+  "identifier": "com.eclipse30618.ftc.desktopstation",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EclipseDesktopStation",
+        "width": 1280,
+        "height": 1080,
+        "minWidth": 980,
+        "minHeight": 700
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "FTC practice driver station",
+    "longDescription": "Cross-platform desktop practice console for FTC Robot Controllers and Control Hubs. Connects over the FTC Robocol UDP protocol for telemetry, OpMode control, and configuration management. Not for official competition use.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

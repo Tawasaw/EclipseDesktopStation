@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -37,9 +37,9 @@ jobs:
             patchelf
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install Rust stable
@@ -76,7 +76,9 @@ jobs:
             | Platform | File |
             |----------|------|
             | macOS    | `.dmg` |
-            | Linux    | `.AppImage` (portable) or `.deb` (Debian/Ubuntu) |
+            | Linux (Debian/Ubuntu) | `.deb` |
+            | Linux (Fedora/RHEL)   | `.rpm` |
+            | Linux (any distro)    | `.AppImage` (portable, no install) |
             | Windows  | `.msi` or `.exe` |
 
             > **macOS:** The app is not notarized. On first launch, right-click → **Open**.

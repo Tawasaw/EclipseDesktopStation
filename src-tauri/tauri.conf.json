@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "EclipseDesktopStation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.eclipse30618.ftc.desktopstation",
   "build": {
     "beforeDevCommand": "npm run dev",

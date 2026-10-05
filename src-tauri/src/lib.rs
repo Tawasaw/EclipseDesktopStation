@@ -1,4 +1,5 @@
 mod debug_log;
+pub mod hub_check;
 mod robocol;
 mod xml_config;
 

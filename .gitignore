@@ -30,3 +30,4 @@ src-tauri/icons/StoreLogo.png
 # Environment files
 .env
 .env.*
+hub-check-report.txt

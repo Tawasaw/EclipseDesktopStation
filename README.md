@@ -3,7 +3,7 @@
 Virtual Driver Hub app similar to REV's.
 
 This is a Tauri + Rust app that connects to a Robot Controller over the FTC
-Robocol UDP protocol. Targets FTC SDK 11.1 (Robocol version 124). Intended for
+Robocol UDP protocol. Targets FTC SDK 12.0 (Robocol version 124). Intended for
 practice and diagnostics — **not for official competition use**.
 
 ![EclipseDesktopStation screenshot](docs/screenshot.jpg)
@@ -12,7 +12,8 @@ practice and diagnostics — **not for official competition use**.
 
 - Connect to a Robot Controller by IP address.
 - Heartbeat/keepalive traffic to maintain the Robocol session.
-- OpMode list with Init, Start, and Stop lifecycle controls.
+- OpMode list with Init, Start, and Stop lifecycle controls (Utility
+  OpModes from SDK 11.2+ are listed last, with their description on hover).
 - Robot state, battery, active config, and practice timer.
 - Telemetry display (preserves packet order; shows unnamed rows).
 - Detects when another Driver Station is already connected and greys out.
@@ -113,7 +114,8 @@ Key event names: `connect`, `disconnect`, `tx_command`, `rx_command`,
 ## Protocol Notes
 
 - Robocol UDP port: `20884`
-- Robocol version: `124` (FTC SDK 11.1)
+- Robocol version: `124` (unchanged from FTC SDK 11.x through 12.0)
+- Peer discovery advertises SDK `12.0`, build month `2026-09`
 - Default Control Hub IP: `192.168.43.1`
 - If local port 20884 is in use, the app falls back to an ephemeral port
   (shown in the telemetry panel header).

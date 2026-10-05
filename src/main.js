@@ -375,7 +375,7 @@ function renderSnapshot(snapshot) {
   setStatus(statusKind, statusText);
   elements.robotState.textContent = snapshot.robot_state || "Unknown";
   elements.activeConfig.textContent = snapshot.active_config?.name ?? "None";
-  elements.battery.textContent = snapshot.robot_battery ? `${snapshot.robot_battery} V` : "--";
+  elements.battery.textContent = formatBattery(snapshot.robot_battery);
   elements.peerInfo.textContent = snapshot.peer
     ? `${snapshot.peer} ${snapshot.local_port ? `(local ${snapshot.local_port})` : ""}`
     : "No peer";
@@ -384,6 +384,13 @@ function renderSnapshot(snapshot) {
   renderOpModes(snapshot.op_modes ?? []);
   renderConfigs(snapshot.configs ?? [], snapshot.active_config?.name);
   renderTelemetry(snapshot.telemetry ?? []);
+}
+
+// The RC sends "$no$voltage$sensor$" instead of a number when it can't read
+// the main battery (e.g. hub powered over USB only).
+function formatBattery(value) {
+  if (!value) return "--";
+  return Number.isFinite(Number(value)) ? `${value} V` : "No sensor";
 }
 
 function renderRobotMessage(snapshot, blocked) {
@@ -425,7 +432,9 @@ function renderOpModes(opModes) {
       ...opModes.map((mode) => {
         const row = document.createElement("div");
         row.className = "opmode-row";
+        row.classList.toggle("utility", mode.flavor === "UTILITY");
         row.dataset.opmode = mode.name;
+        if (mode.description) row.title = mode.description;
         row.setAttribute("role", "option");
         row.innerHTML = `<span>${mode.flavor || "OPMODE"}</span><strong></strong>`;
         row.querySelector("strong").textContent = mode.name;

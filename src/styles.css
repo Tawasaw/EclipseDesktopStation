@@ -333,6 +333,10 @@ h2 {
   font-weight: 900;
 }
 
+.opmode-row.utility span {
+  color: #93c4d9;
+}
+
 .opmode-row strong {
   overflow-wrap: anywhere;
   white-space: normal;

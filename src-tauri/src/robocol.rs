@@ -11,13 +11,19 @@ use thiserror::Error;
 
 pub const ROBOCOL_PORT: u16 = 20884;
 pub const ROBOCOL_VERSION: u8 = 124;
-const DEFAULT_OP_MODE_NAME: &str = "$Stop$Robot$";
+const SDK_MAJOR_VERSION: u8 = 12;
+const SDK_MINOR_VERSION: u8 = 0;
+const SDK_BUILD_YEAR: u16 = 2026;
+const SDK_BUILD_MONTH: u8 = 9;
+pub const DEFAULT_OP_MODE_NAME: &str = "$Stop$Robot$";
 const ROBOT_BATTERY_KEY: &str = "$Robot$Battery$Level$";
 
 const CMD_REQUEST_OP_MODE_LIST: &str = "CMD_REQUEST_OP_MODE_LIST";
 const CMD_NOTIFY_OP_MODE_LIST: &str = "CMD_NOTIFY_OP_MODE_LIST";
 const CMD_REQUEST_ACTIVE_CONFIG: &str = "CMD_REQUEST_ACTIVE_CONFIG";
 const CMD_NOTIFY_ACTIVE_CONFIGURATION: &str = "CMD_NOTIFY_ACTIVE_CONFIGURATION";
+const CMD_NOTIFY_INIT_OP_MODE: &str = "CMD_NOTIFY_INIT_OP_MODE";
+const CMD_NOTIFY_RUN_OP_MODE: &str = "CMD_NOTIFY_RUN_OP_MODE";
 const CMD_INIT_OP_MODE: &str = "CMD_INIT_OP_MODE";
 const CMD_RUN_OP_MODE: &str = "CMD_RUN_OP_MODE";
 const CMD_REQUEST_CONFIGURATIONS: &str = "CMD_REQUEST_CONFIGURATIONS";
@@ -49,6 +55,10 @@ pub struct RobotSnapshot {
     pub connected: bool,
     pub peer: Option<String>,
     pub peer_conflict: bool,
+    /// Robocol version and SDK version ("12.0 (2026-09)") the Robot Controller
+    /// advertises in its PeerDiscovery packets.
+    pub robot_robocol_version: Option<u8>,
+    pub robot_sdk: Option<String>,
     pub local_port: Option<u16>,
     pub last_packet_ms: Option<u128>,
     pub last_error: Option<String>,
@@ -57,6 +67,10 @@ pub struct RobotSnapshot {
     pub configs: Vec<RobotConfigFile>,
     pub op_modes: Vec<OpModeMeta>,
     pub selected_op_mode: Option<String>,
+    /// OpMode the RC reports as active (CMD_NOTIFY_INIT_OP_MODE), and whether
+    /// it has been started (CMD_NOTIFY_RUN_OP_MODE). `$Stop$Robot$` == idle.
+    pub active_op_mode: Option<String>,
+    pub op_mode_running: bool,
     pub telemetry: Vec<TelemetryLine>,
     pub robot_battery: Option<String>,
     pub robot_error: Option<String>,
@@ -81,6 +95,9 @@ pub struct OpModeMeta {
     pub auto_transition: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Set by `@Utility(description = ...)` OpModes (FTC SDK 11.2+).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,19 +406,27 @@ impl RobocolClient {
     }
 
     fn handle_peer_discovery(&self, data: &[u8]) {
-        // PeerDiscovery wire layout (FTC SDK 11.1):
+        // PeerDiscovery wire layout (FTC SDK 12.0):
         //   [0] msg type  [1..3] payload size  [3] robocol version
-        //   [4] peer type  [5..7] sequence  [7..] sdk build/version
+        //   [4] peer type  [5..7] sequence  [7] sdk build month
+        //   [8..10] sdk build year  [10] sdk major  [11] sdk minor
         // peer type 3 == NOT_CONNECTED_DUE_TO_PREEXISTING_CONNECTION: the Robot
         // Controller already has another Driver Station / Driver Hub connected.
         if data.len() < 5 {
             return;
         }
         let conflict = data[4] == 3;
+        let robocol_version = data[3];
+        let sdk = (data.len() >= 12).then(|| {
+            let year = u16::from_be_bytes([data[8], data[9]]);
+            format!("{}.{} ({year}-{:02})", data[10], data[11], data[7])
+        });
         let changed = match self.snapshot.write() {
             Ok(mut snapshot) => {
-                let changed = snapshot.peer_conflict != conflict;
+                let changed = snapshot.peer_conflict != conflict || snapshot.robot_sdk != sdk;
                 snapshot.peer_conflict = conflict;
+                snapshot.robot_robocol_version = Some(robocol_version);
+                snapshot.robot_sdk = sdk.clone();
                 changed
             }
             Err(_) => return,
@@ -409,7 +434,12 @@ impl RobocolClient {
         if changed {
             self.log.record(
                 "peer_discovery",
-                json!({ "peer_type": data[4], "conflict": conflict }),
+                json!({
+                    "peer_type": data[4],
+                    "conflict": conflict,
+                    "robocol_version": robocol_version,
+                    "sdk": sdk,
+                }),
             );
         }
     }
@@ -458,12 +488,28 @@ impl RobocolClient {
                 if let Ok(op_modes) = serde_json::from_str::<Vec<OpModeMeta>>(&command.extra) {
                     self.log
                         .record("op_mode_list", json!({ "count": op_modes.len() }));
+                    let mut op_modes = op_modes
+                        .into_iter()
+                        .filter(|mode| mode.flavor != "SYSTEM")
+                        .collect::<Vec<_>>();
+                    // The official DS keeps UTILITY OpModes (SDK 11.2+) in a
+                    // separate menu; list them after the match OpModes.
+                    op_modes.sort_by_key(|mode| mode.flavor == "UTILITY");
                     if let Ok(mut snapshot) = self.snapshot.write() {
-                        snapshot.op_modes = op_modes
-                            .into_iter()
-                            .filter(|mode| mode.flavor != "SYSTEM")
-                            .collect();
+                        snapshot.op_modes = op_modes;
                     }
+                }
+            }
+            CMD_NOTIFY_INIT_OP_MODE => {
+                if let Ok(mut snapshot) = self.snapshot.write() {
+                    snapshot.active_op_mode = Some(command.extra);
+                    snapshot.op_mode_running = false;
+                }
+            }
+            CMD_NOTIFY_RUN_OP_MODE => {
+                if let Ok(mut snapshot) = self.snapshot.write() {
+                    snapshot.active_op_mode = Some(command.extra);
+                    snapshot.op_mode_running = true;
                 }
             }
             CMD_REQUEST_CONFIGURATIONS_RESP => {
@@ -556,6 +602,10 @@ impl RobocolClient {
         }
     }
 
+    /// Advertise ourselves as an SDK 12.0 Driver Station built 2026-09. The RC
+    /// compares the build month against the FTC season (and flags any peer
+    /// built before August once October arrives) and shows a "mismatched apps"
+    /// warning if major/minor differ, so keep these in step with the SDK.
     fn send_peer_discovery(&self) -> Result<(), RobocolError> {
         let seq = self.next_seq();
         let mut packet = Vec::with_capacity(13);
@@ -564,10 +614,10 @@ impl RobocolClient {
         packet.push(ROBOCOL_VERSION);
         packet.push(1);
         packet.extend_from_slice(&seq.to_be_bytes());
-        packet.push(12);
-        packet.extend_from_slice(&(2025_u16).to_be_bytes());
-        packet.push(11);
-        packet.push(1);
+        packet.push(SDK_BUILD_MONTH);
+        packet.extend_from_slice(&SDK_BUILD_YEAR.to_be_bytes());
+        packet.push(SDK_MAJOR_VERSION);
+        packet.push(SDK_MINOR_VERSION);
         packet.push(0);
         self.send_raw(&packet)
     }

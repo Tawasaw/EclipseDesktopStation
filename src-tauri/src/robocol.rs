@@ -165,9 +165,9 @@ impl RobocolClient {
             log,
         });
 
+        client.send_peer_discovery()?;
         client.spawn_receive_loop();
         client.spawn_heartbeat_loop();
-        client.send_peer_discovery()?;
         client.refresh_metadata();
         Ok(client)
     }

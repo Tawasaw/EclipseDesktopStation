@@ -24,6 +24,15 @@ practice and diagnostics — **not for official competition use**.
   - Activate any config on the hub.
   - Upload a local XML file (activates on save — RC behavior).
   - Delete configs.
+- USB gamepad control, sent to the robot exactly like the SDK 12.0 Driver
+  Station (gamepad1/gamepad2, same dead zones and stick directions):
+  - Logitech F310 (either switch position), Xbox 360 controllers, PS4/PS5
+    controllers, and other gamepads your OS recognizes. On macOS the F310 in
+    **X** mode and wired Xbox 360 controllers are read over raw USB, since macOS
+    has no driver for them.
+  - The first controller is assigned to gamepad1 automatically and a second one to
+    gamepad2. Reassign from the Gamepads bar, or hold **Start** and press **A**
+    (gamepad1) or **B** (gamepad2), as on the Driver Hub.
 - JSONL session logs (opt-in) for field debugging — disabled by default,
   enabled via a checkbox by the IP box.
 
@@ -42,6 +51,7 @@ no Rust or Node.js required.
 
 - Node.js + npm
 - Rust toolchain (`rustup`)
+- Linux: `libudev-dev` (gamepad support).
 - Tauri 2 system dependencies for your OS
   ([see Tauri docs](https://v2.tauri.app/start/prerequisites/))
 
@@ -58,6 +68,7 @@ npm run tauri:dev
 npm run build
 cd src-tauri && cargo check
 cd src-tauri && cargo fmt
+cd src-tauri && cargo run --example gamepad_check   # live USB gamepad readout
 ```
 
 ### Build a release binary

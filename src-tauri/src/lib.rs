@@ -1,28 +1,58 @@
-mod debug_log;
+pub mod debug_log;
+pub mod gamepad;
 pub mod hub_check;
 mod robocol;
 mod xml_config;
 
 use debug_log::SessionLog;
+use gamepad::{GamepadManager, GamepadStatus};
 use robocol::{RobocolClient, RobotSnapshot};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use tauri::State;
 use xml_config::XmlValidation;
 
+/// The Driver Station's send loop runs every 40 ms.
+const GAMEPAD_SEND_INTERVAL: Duration = Duration::from_millis(40);
+
 struct AppState {
-    client: Mutex<Option<Arc<RobocolClient>>>,
+    client: Arc<Mutex<Option<Arc<RobocolClient>>>>,
     log: Arc<SessionLog>,
+    gamepads: Arc<GamepadManager>,
 }
 
 impl AppState {
     fn new() -> Self {
         // Logging is disabled by default; the user opts in from the UI, at
         // which point a session file is created.
-        Self {
-            client: Mutex::new(None),
-            log: Arc::new(SessionLog::new()),
-        }
+        let log = Arc::new(SessionLog::new());
+        let state = Self {
+            client: Arc::new(Mutex::new(None)),
+            gamepads: GamepadManager::start(Arc::clone(&log)),
+            log,
+        };
+        state.spawn_gamepad_sender();
+        state
+    }
+
+    /// Forward gamepad input to the connected Robot Controller.
+    fn spawn_gamepad_sender(&self) {
+        let client = Arc::clone(&self.client);
+        let gamepads = Arc::clone(&self.gamepads);
+        thread::spawn(move || loop {
+            let payloads = gamepads.take_transmissions();
+            if !payloads.is_empty() {
+                let client = client.lock().expect("client lock").clone();
+                if let Some(client) = client {
+                    for payload in payloads {
+                        let _ = client.send_gamepad(&payload);
+                    }
+                }
+            }
+            thread::sleep(GAMEPAD_SEND_INTERVAL);
+        });
     }
 }
 
@@ -198,6 +228,25 @@ fn clear_robot_message(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_gamepads(state: State<'_, AppState>) -> GamepadStatus {
+    state.gamepads.status()
+}
+
+#[tauri::command]
+fn set_gamepad_user(
+    state: State<'_, AppState>,
+    id: i32,
+    user: Option<u8>,
+) -> Result<GamepadStatus, String> {
+    state.log.record(
+        "ui_set_gamepad_user",
+        serde_json::json!({ "id": id, "user": user }),
+    );
+    state.gamepads.set_user(id, user)?;
+    Ok(state.gamepads.status())
+}
+
+#[tauri::command]
 fn get_log_path(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.log.path_string())
 }
@@ -247,6 +296,8 @@ pub fn run() {
             activate_config,
             delete_config,
             clear_robot_message,
+            get_gamepads,
+            set_gamepad_user,
             get_log_path,
             set_logging,
             get_app_version

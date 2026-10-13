@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Per-session JSONL log. Disabled by default — no file is created until the
 /// user opts in via the UI. Logging is best-effort: if the log directory or
 /// file cannot be created the app still runs normally, with logging disabled.
+#[derive(Default)]
 pub struct SessionLog {
     /// `Some` while logging is enabled, holding the open session file and its
     /// path. `None` when logging is disabled (the default).
@@ -108,7 +109,12 @@ fn log_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(xdg).join(app).join("logs"));
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return Some(PathBuf::from(home).join(".local/state").join(app).join("logs"));
+            return Some(
+                PathBuf::from(home)
+                    .join(".local/state")
+                    .join(app)
+                    .join("logs"),
+            );
         }
     }
 

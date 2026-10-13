@@ -635,6 +635,11 @@ impl RobocolClient {
         self.send_packet(1, &payload)
     }
 
+    /// Send an encoded Gamepad payload (Robocol msg type 2).
+    pub fn send_gamepad(&self, payload: &[u8]) -> Result<(), RobocolError> {
+        self.send_packet(2, payload)
+    }
+
     fn send_keepalive(&self) -> Result<(), RobocolError> {
         self.send_packet(6, &[0])
     }

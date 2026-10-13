@@ -16,6 +16,7 @@ const state = {
   configSignature: "",
   pendingDeleteConfig: null,
   deleteResetTimer: null,
+  gamepadSignature: "",
 };
 
 const app = document.querySelector("#app");
@@ -67,6 +68,12 @@ app.innerHTML = `
         <span>Timer</span>
         <strong id="timer">0:00</strong>
       </div>
+    </section>
+
+    <section class="gamepad-bar" aria-label="Gamepads">
+      <h2>Gamepads</h2>
+      <div id="gamepadList" class="gamepad-list"></div>
+      <p id="gamepadNotice" class="message"></p>
     </section>
 
     <section class="workspace">
@@ -147,6 +154,8 @@ const elements = {
   bannerDismiss: document.querySelector("#bannerDismiss"),
   appVersion: document.querySelector("#appVersion"),
   logToggle: document.querySelector("#logToggle"),
+  gamepadList: document.querySelector("#gamepadList"),
+  gamepadNotice: document.querySelector("#gamepadNotice"),
 };
 
 elements.connectForm.addEventListener("submit", async (event) => {
@@ -333,6 +342,81 @@ elements.uploadConfigBtn.addEventListener("click", async () => {
     setConfigMessage(`Upload failed: ${message}`);
   });
 });
+
+elements.gamepadList.addEventListener("change", async (event) => {
+  const select = event.target.closest("[data-gamepad]");
+  if (!select) return;
+  const user = select.value ? Number(select.value) : null;
+  try {
+    renderGamepads(await invoke("set_gamepad_user", { id: Number(select.dataset.gamepad), user }));
+  } catch (error) {
+    elements.gamepadNotice.textContent = String(error);
+  }
+});
+
+// Gamepads are polled independently of the robot connection so a controller
+// can be checked and assigned before connecting.
+function pollGamepads() {
+  invoke("get_gamepads")
+    .then(renderGamepads)
+    .catch(() => {});
+}
+
+function renderGamepads(status) {
+  elements.gamepadNotice.textContent = status.notice ?? "";
+  const pads = status.pads ?? [];
+  const signature = pads.map((pad) => `${pad.id}:${pad.user}`).join("|");
+  if (signature !== state.gamepadSignature) {
+    state.gamepadSignature = signature;
+    if (!pads.length) {
+      elements.gamepadList.innerHTML = `<span class="empty">No gamepad. Plug one in over USB.</span>`;
+    } else {
+      elements.gamepadList.replaceChildren(
+        ...pads.map((pad) => {
+          const row = document.createElement("div");
+          row.className = "gamepad-row";
+          row.dataset.gamepadRow = pad.id;
+          row.innerHTML = `
+            <strong></strong>
+            <select data-gamepad="${pad.id}" aria-label="Gamepad assignment">
+              <option value="1">gamepad1</option>
+              <option value="2">gamepad2</option>
+              <option value="">Off</option>
+            </select>
+            <span class="gamepad-live"></span>`;
+          row.querySelector("strong").textContent = pad.name;
+          row.querySelector("select").value = pad.user ? String(pad.user) : "";
+          return row;
+        }),
+      );
+    }
+  }
+  for (const pad of pads) {
+    const live = elements.gamepadList.querySelector(`[data-gamepad-row="${pad.id}"] .gamepad-live`);
+    if (live) live.textContent = describeGamepad(pad.state);
+  }
+}
+
+const GAMEPAD_BUTTONS = [
+  ["a", "A"], ["b", "B"], ["x", "X"], ["y", "Y"],
+  ["left_bumper", "LB"], ["right_bumper", "RB"],
+  ["dpad_up", "↑"], ["dpad_down", "↓"], ["dpad_left", "←"], ["dpad_right", "→"],
+  ["back", "Back"], ["start", "Start"], ["guide", "Guide"],
+  ["left_stick_button", "LS"], ["right_stick_button", "RS"],
+];
+
+function describeGamepad(pad) {
+  const fmt = (value) => (value >= 0 ? "+" : "") + value.toFixed(2);
+  const parts = [
+    `L ${fmt(pad.left_stick_x)} ${fmt(pad.left_stick_y)}`,
+    `R ${fmt(pad.right_stick_x)} ${fmt(pad.right_stick_y)}`,
+  ];
+  if (pad.left_trigger) parts.push(`LT ${pad.left_trigger.toFixed(2)}`);
+  if (pad.right_trigger) parts.push(`RT ${pad.right_trigger.toFixed(2)}`);
+  const pressed = GAMEPAD_BUTTONS.filter(([key]) => pad[key]).map(([, label]) => label);
+  if (pressed.length) parts.push(pressed.join(" "));
+  return parts.join("  ");
+}
 
 function startPolling() {
   window.clearInterval(window.ftcPoller);
@@ -564,6 +648,8 @@ function setStatus(kind, message) {
 }
 
 renderDisconnected();
+pollGamepads();
+window.setInterval(pollGamepads, 100);
 
 invoke("get_app_version")
   .then((version) => {

@@ -526,6 +526,48 @@ button:disabled {
   border-color: #f6f3ef;
 }
 
+.gamepad-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 2px solid #d9371e;
+  border-radius: 8px;
+  background: #390006;
+}
+
+.gamepad-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.gamepad-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gamepad-row select {
+  width: auto;
+  min-height: 30px;
+  padding: 4px 6px;
+}
+
+.gamepad-live {
+  color: #f2c6a8;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.gamepad-bar .empty {
+  padding: 0;
+}
+
 .shell.stale .status-grid,
 .shell.stale .workspace {
   opacity: 0.45;

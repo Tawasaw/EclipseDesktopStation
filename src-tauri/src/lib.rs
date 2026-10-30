@@ -1,3 +1,5 @@
+#[cfg(unix)]
+mod automation;
 pub mod debug_log;
 pub mod gamepad;
 pub mod hub_check;
@@ -34,6 +36,12 @@ impl AppState {
             log,
         };
         state.spawn_gamepad_sender();
+        #[cfg(unix)]
+        if let Err(error) = automation::start(Arc::clone(&state.client), Arc::clone(&state.log)) {
+            state
+                .log
+                .record("automation_error", serde_json::json!({"error": error}));
+        }
         state
     }
 

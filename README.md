@@ -36,6 +36,12 @@ practice and diagnostics — **not for official competition use**.
 - JSONL session logs (opt-in) for field debugging — disabled by default,
   enabled via a checkbox by the IP box.
 
+## Local automation interface
+
+External tools can query robot status, connect, and initialize/start/stop registered
+OpModes through the app’s private Unix socket, using the same connection as the GUI.
+See the [automation API and integration guide](docs/AUTOMATION.md).
+
 ## Download
 
 Pre-built installers for macOS, Linux, and Windows are on the
@@ -133,7 +139,6 @@ Key event names: `connect`, `disconnect`, `tx_command`, `rx_command`,
 
 ## Known Limitations
 
-- No gamepad input — this is a practice console, not a driving station.
 - macOS releases are not notarized (no Apple Developer account required to
   build, but first-run requires right-click → Open).
 - Linux uses the system WebKit2GTK runtime. The `.AppImage` bundles most of

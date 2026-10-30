@@ -177,7 +177,7 @@ fn download_config_xml(
 }
 
 #[tauri::command]
-fn upload_config_xml(
+async fn upload_config_xml(
     state: State<'_, AppState>,
     config_name: String,
     xml: String,
@@ -187,16 +187,24 @@ fn upload_config_xml(
         serde_json::json!({ "config_name": &config_name, "xml_bytes": xml.len() }),
     );
     let validation = xml_config::validate_robot_xml(&xml).map_err(|err| err.to_string())?;
-    with_client(&state, |client| {
+    let client = state
+        .client
+        .lock()
+        .expect("client lock")
+        .clone()
+        .ok_or_else(|| "not connected".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
         client
             .save_config_xml(&config_name, &xml)
             .map_err(|err| err.to_string())?;
         Ok(UploadResult { validation })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn activate_config(
+async fn activate_config(
     state: State<'_, AppState>,
     config_name: String,
 ) -> Result<ActivateResult, String> {
@@ -204,7 +212,13 @@ fn activate_config(
         "ui_activate_config",
         serde_json::json!({ "config_name": &config_name }),
     );
-    with_client(&state, |client| {
+    let client = state
+        .client
+        .lock()
+        .expect("client lock")
+        .clone()
+        .ok_or_else(|| "not connected".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
         let snapshot = client
             .activate_config(&config_name)
             .map_err(|err| err.to_string())?;
@@ -212,6 +226,8 @@ fn activate_config(
             active_config: snapshot.active_config,
         })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

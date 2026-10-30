@@ -21,7 +21,7 @@ practice and diagnostics — **not for official competition use**.
 - XML config management:
   - Browse and select configs from a dropdown (active config marked `*`).
   - Download a config to `~/Downloads`.
-  - Activate any config on the hub.
+  - Activate any config on the hub, restart the robot runtime to apply its hardware map, and wait until the runtime is ready.
   - Upload a local XML file (activates on save — RC behavior).
   - Delete configs.
 - USB gamepad control, sent to the robot exactly like the SDK 12.0 Driver
@@ -149,3 +149,5 @@ Key event names: `connect`, `disconnect`, `tx_command`, `rx_command`,
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Configuration activation and XML upload both restart the robot runtime. Completion requires a fresh runtime state transition back to Running and refreshed active configuration, OpMode list, and configuration list; a matching configuration name alone does not count as success. INIT and START are rejected while a configuration change is in progress. Restart and metadata timeouts are reported as errors, since the selected configuration may not yet have been applied to hardware. The SDK does not provide an explicit SAVE result; when overwriting an already-active configuration, selection confirmation cannot independently prove that the file was written.

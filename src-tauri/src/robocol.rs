@@ -31,6 +31,8 @@ const CMD_REQUEST_CONFIGURATIONS_RESP: &str = "CMD_REQUEST_CONFIGURATIONS_RESP";
 const CMD_REQUEST_PARTICULAR_CONFIGURATION: &str = "CMD_REQUEST_PARTICULAR_CONFIGURATION";
 const CMD_REQUEST_PARTICULAR_CONFIGURATION_RESP: &str = "CMD_REQUEST_PARTICULAR_CONFIGURATION_RESP";
 const CMD_ACTIVATE_CONFIGURATION: &str = "CMD_ACTIVATE_CONFIGURATION";
+const CMD_RESTART_ROBOT: &str = "CMD_RESTART_ROBOT";
+const CMD_NOTIFY_ROBOT_STATE: &str = "CMD_NOTIFY_ROBOT_STATE";
 const CMD_SAVE_CONFIGURATION: &str = "CMD_SAVE_CONFIGURATION";
 const CMD_DELETE_CONFIGURATION: &str = "CMD_DELETE_CONFIGURATION";
 const CMD_SHOW_STACKTRACE: &str = "CMD_SHOW_STACKTRACE";
@@ -63,6 +65,7 @@ pub struct RobotSnapshot {
     pub last_packet_ms: Option<u128>,
     pub last_error: Option<String>,
     pub robot_state: String,
+    pub config_applying: bool,
     pub active_config: Option<RobotConfigFile>,
     pub configs: Vec<RobotConfigFile>,
     pub op_modes: Vec<OpModeMeta>,
@@ -122,6 +125,36 @@ impl RobotConfigFile {
     }
 }
 
+// Command timestamps let us reject cached/retransmitted notifications when
+// waiting for a new configuration or a hardware-runtime restart.
+#[derive(Clone, Copy, Default)]
+struct RuntimeObservations {
+    active_config: i64,
+    op_modes: i64,
+    configs: i64,
+    state: i64,
+    restart_started: i64,
+    restart_completed: i64,
+}
+
+impl RuntimeObservations {
+    fn observe_state(&mut self, timestamp: i64, state: i8) {
+        if timestamp <= self.state {
+            return;
+        }
+        self.state = timestamp;
+        if state != 2 {
+            self.restart_started = timestamp;
+        } else if self.restart_started > 0 {
+            self.restart_completed = timestamp;
+        }
+    }
+
+    fn restarted_since(&self, baseline: Self) -> bool {
+        self.restart_started > baseline.state && self.restart_completed > self.restart_started
+    }
+}
+
 pub struct RobocolClient {
     socket: Arc<UdpSocket>,
     peer: SocketAddr,
@@ -129,6 +162,8 @@ pub struct RobocolClient {
     running: AtomicBool,
     snapshot: Arc<RwLock<RobotSnapshot>>,
     last_config_xml: Mutex<Option<(u64, String)>>,
+    observations: Mutex<RuntimeObservations>,
+    operation: Mutex<()>,
     log: Arc<SessionLog>,
 }
 
@@ -162,6 +197,8 @@ impl RobocolClient {
                 ..RobotSnapshot::default()
             })),
             last_config_xml: Mutex::new(None),
+            observations: Mutex::new(RuntimeObservations::default()),
+            operation: Mutex::new(()),
             log,
         });
 
@@ -175,6 +212,7 @@ impl RobocolClient {
     pub fn snapshot(&self) -> RobotSnapshot {
         let mut snapshot = self.snapshot.read().expect("snapshot lock").clone();
         snapshot.connected = self.is_fresh();
+        snapshot.config_applying = self.operation.try_lock().is_err();
         snapshot
     }
 
@@ -202,6 +240,9 @@ impl RobocolClient {
     }
 
     pub fn init_op_mode(&self, name: &str) -> Result<(), RobocolError> {
+        let _operation = self.operation.try_lock().map_err(|_| {
+            RobocolError::Protocol("configuration change already in progress".to_string())
+        })?;
         self.log.record("init_op_mode", json!({ "name": name }));
         self.send_command(CMD_INIT_OP_MODE, name)?;
         if let Ok(mut snapshot) = self.snapshot.write() {
@@ -213,6 +254,9 @@ impl RobocolClient {
     }
 
     pub fn run_op_mode(&self, name: &str) -> Result<(), RobocolError> {
+        let _operation = self.operation.try_lock().map_err(|_| {
+            RobocolError::Protocol("configuration change already in progress".to_string())
+        })?;
         self.log.record("run_op_mode", json!({ "name": name }));
         self.send_command(CMD_RUN_OP_MODE, name)
     }
@@ -266,9 +310,12 @@ impl RobocolClient {
     /// Save (upload) a config to the Robot Controller. The RC activates any
     /// config it saves (FtcEventLoopBase.handleCommandSaveConfiguration calls
     /// setActiveConfigAndUpdateUI), so a successful upload also makes this the
-    /// active config. The new config appears in the config list after the
-    /// metadata refresh.
+    /// active config. Restart the runtime to rebuild its hardware map, then
+    /// wait for fresh metadata before reporting success.
     pub fn save_config_xml(&self, config_name: &str, xml: &str) -> Result<(), RobocolError> {
+        let _operation = self.operation.try_lock().map_err(|_| {
+            RobocolError::Protocol("configuration change already in progress".to_string())
+        })?;
         self.log.record(
             "save_config_xml",
             json!({
@@ -279,14 +326,19 @@ impl RobocolClient {
         let config = RobotConfigFile::local(config_name);
         let config_json = serde_json::to_string(&config)?;
         let payload = format!("{config_json};{xml}");
+        let baseline = *self.observations.lock().expect("observations lock");
+        self.clear_robot_messages();
         self.send_command(CMD_SAVE_CONFIGURATION, &payload)?;
-        thread::sleep(Duration::from_millis(250));
-        self.refresh_metadata();
+        self.wait_for_config_selection(&config.name, baseline)?;
+        self.restart_for_config(&config.name)?;
         Ok(())
     }
 
     /// Delete a config from the Robot Controller, selected by name.
     pub fn delete_config(&self, config_name: &str) -> Result<(), RobocolError> {
+        let _operation = self.operation.try_lock().map_err(|_| {
+            RobocolError::Protocol("configuration change already in progress".to_string())
+        })?;
         self.log
             .record("delete_config", json!({ "config_name": config_name }));
         let config = self
@@ -308,6 +360,9 @@ impl RobocolClient {
     /// Activate a config that already exists on the Robot Controller, selected
     /// by name. Uses the RC's own metadata for the config when available.
     pub fn activate_config(&self, config_name: &str) -> Result<RobotSnapshot, RobocolError> {
+        let _operation = self.operation.try_lock().map_err(|_| {
+            RobocolError::Protocol("configuration change already in progress".to_string())
+        })?;
         self.log
             .record("activate_config", json!({ "config_name": config_name }));
         let config = self
@@ -320,22 +375,117 @@ impl RobocolClient {
             .cloned()
             .unwrap_or_else(|| RobotConfigFile::local(config_name));
         let config_json = serde_json::to_string(&config)?;
+        let baseline = *self.observations.lock().expect("observations lock");
+        self.clear_robot_messages();
         self.send_command(CMD_ACTIVATE_CONFIGURATION, &config_json)?;
-        self.refresh_metadata();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
+        self.wait_for_config_selection(&config.name, baseline)?;
+        self.restart_for_config(&config.name)
+    }
+
+    fn wait_for_config_selection(
+        &self,
+        name: &str,
+        baseline: RuntimeObservations,
+    ) -> Result<(), RobocolError> {
+        self.wait_for(
+            "configuration selection",
+            Duration::from_secs(5),
+            || {
+                let observations = *self.observations.lock().expect("observations lock");
+                observations.active_config > baseline.active_config && self.has_active_config(name)
+            },
+            || self.send_command(CMD_REQUEST_ACTIVE_CONFIG, ""),
+        )
+    }
+
+    fn has_active_config(&self, name: &str) -> bool {
+        self.snapshot
+            .read()
+            .expect("snapshot lock")
+            .active_config
+            .as_ref()
+            .map(|config| config.name.eq_ignore_ascii_case(name))
+            .unwrap_or(false)
+    }
+
+    fn restart_for_config(&self, name: &str) -> Result<RobotSnapshot, RobocolError> {
+        let baseline = *self.observations.lock().expect("observations lock");
+        self.log
+            .record("restart_robot", json!({ "config_name": name }));
+        self.send_command(CMD_RESTART_ROBOT, "")?;
+        // The SDK reliably sends CMD_NOTIFY_ROBOT_STATE on each transition.
+        // A cached Running heartbeat or matching config name proves nothing
+        // about the new hardware map; require a new non-running -> Running cycle.
+        self.wait_for(
+            "robot runtime restart",
+            Duration::from_secs(25),
+            || {
+                let current = *self.observations.lock().expect("observations lock");
+                current.restarted_since(baseline)
+            },
+            || Ok(()),
+        )?;
+        let metadata = *self.observations.lock().expect("observations lock");
+        self.wait_for(
+            "configuration metadata after restart",
+            Duration::from_secs(5),
+            || {
+                let current = *self.observations.lock().expect("observations lock");
+                current.active_config > metadata.active_config
+                    && current.op_modes > metadata.op_modes
+                    && current.configs > metadata.configs
+                    && self.has_active_config(name)
+            },
+            || {
+                self.send_command(CMD_REQUEST_ACTIVE_CONFIG, "")?;
+                self.send_command(CMD_REQUEST_OP_MODE_LIST, "")?;
+                self.send_command(CMD_REQUEST_CONFIGURATIONS, "")
+            },
+        )?;
+        let mut snapshot = self.snapshot.write().expect("snapshot lock");
+        snapshot.selected_op_mode = None;
+        snapshot.active_op_mode = Some(DEFAULT_OP_MODE_NAME.to_string());
+        snapshot.op_mode_running = false;
+        snapshot.telemetry.clear();
+        Ok(snapshot.clone())
+    }
+
+    fn wait_for(
+        &self,
+        stage: &str,
+        timeout: Duration,
+        ready: impl Fn() -> bool,
+        refresh: impl Fn() -> Result<(), RobocolError>,
+    ) -> Result<(), RobocolError> {
+        let deadline = Instant::now() + timeout;
+        let mut next_refresh = Instant::now();
+        loop {
             let snapshot = self.snapshot();
-            if snapshot
-                .active_config
-                .as_ref()
-                .map(|active| active.name.eq_ignore_ascii_case(config_name))
-                .unwrap_or(false)
-            {
-                return Ok(snapshot);
+            if !self.running.load(Ordering::Relaxed) || snapshot.peer_conflict {
+                return Err(RobocolError::Protocol(format!(
+                    "{stage}: robot disconnected or peer conflict"
+                )));
             }
-            thread::sleep(Duration::from_millis(100));
+            if let Some(error) = snapshot
+                .robot_error
+                .filter(|error| !error.trim().is_empty())
+            {
+                return Err(RobocolError::Protocol(format!("{stage}: {error}")));
+            }
+            if ready() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(RobocolError::Protocol(format!(
+                    "timed out waiting for {stage}; configuration may be selected but hardware reload is unconfirmed"
+                )));
+            }
+            if Instant::now() >= next_refresh {
+                refresh()?;
+                next_refresh = Instant::now() + Duration::from_millis(250);
+            }
+            thread::sleep(Duration::from_millis(25));
         }
-        Ok(self.snapshot())
     }
 
     fn is_fresh(&self) -> bool {
@@ -468,11 +618,39 @@ impl RobocolClient {
                 "extra_bytes": command.extra.len(),
             }),
         );
-        if !command.acknowledged {
-            let _ = self.send_command_ack(&command);
+        if command.acknowledged {
+            return;
+        }
+        let _ = self.send_command_ack(&command);
+        {
+            let observations = self.observations.lock().expect("observations lock");
+            let last = match command.name.as_str() {
+                CMD_NOTIFY_ACTIVE_CONFIGURATION => observations.active_config,
+                CMD_NOTIFY_OP_MODE_LIST => observations.op_modes,
+                CMD_REQUEST_CONFIGURATIONS_RESP => observations.configs,
+                CMD_NOTIFY_ROBOT_STATE => observations.state,
+                _ => -1,
+            };
+            if command.timestamp <= last {
+                return;
+            }
         }
 
         match command.name.as_str() {
+            CMD_NOTIFY_ROBOT_STATE => {
+                if let Ok(state) = command.extra.parse::<i8>() {
+                    self.observations
+                        .lock()
+                        .expect("observations lock")
+                        .observe_state(command.timestamp, state);
+                    if let Ok(mut snapshot) = self.snapshot.write() {
+                        snapshot.robot_state = robot_state_name(state);
+                        if state == 4 {
+                            snapshot.robot_error = Some("robot emergency stop".to_string());
+                        }
+                    }
+                }
+            }
             CMD_NOTIFY_ACTIVE_CONFIGURATION => {
                 if let Ok(config) = serde_json::from_str::<RobotConfigFile>(&command.extra) {
                     self.log.record(
@@ -481,6 +659,10 @@ impl RobocolClient {
                     );
                     if let Ok(mut snapshot) = self.snapshot.write() {
                         snapshot.active_config = Some(config);
+                        self.observations
+                            .lock()
+                            .expect("observations lock")
+                            .active_config = command.timestamp;
                     }
                 }
             }
@@ -497,6 +679,10 @@ impl RobocolClient {
                     op_modes.sort_by_key(|mode| mode.flavor == "UTILITY");
                     if let Ok(mut snapshot) = self.snapshot.write() {
                         snapshot.op_modes = op_modes;
+                        self.observations
+                            .lock()
+                            .expect("observations lock")
+                            .op_modes = command.timestamp;
                     }
                 }
             }
@@ -518,6 +704,8 @@ impl RobocolClient {
                         .record("config_list", json!({ "count": configs.len() }));
                     if let Ok(mut snapshot) = self.snapshot.write() {
                         snapshot.configs = configs;
+                        self.observations.lock().expect("observations lock").configs =
+                            command.timestamp;
                     }
                 }
             }
@@ -893,4 +1081,224 @@ fn parse_toast_message(extra: &str) -> String {
         }
     }
     extra.trim().to_string()
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    fn client() -> (Arc<RobocolClient>, UdpSocket) {
+        let robot = UdpSocket::bind("127.0.0.1:0").unwrap();
+        robot
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let client = Arc::new(RobocolClient {
+            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap()),
+            peer: robot.local_addr().unwrap(),
+            sequence: AtomicU16::new(1),
+            running: AtomicBool::new(true),
+            snapshot: Arc::new(RwLock::new(RobotSnapshot::default())),
+            last_config_xml: Mutex::new(None),
+            observations: Mutex::new(RuntimeObservations::default()),
+            operation: Mutex::new(()),
+            log: Arc::new(SessionLog::new()),
+        });
+        (client, robot)
+    }
+
+    fn notify(client: &RobocolClient, timestamp: i64, name: &str, extra: &str) {
+        client.handle_command(&encode_command(1, timestamp, false, name, extra));
+    }
+
+    #[test]
+    fn restart_requires_new_transition_and_ignores_duplicates_and_reordering() {
+        let mut states = RuntimeObservations::default();
+        states.observe_state(10, 2);
+        let baseline = states;
+        states.observe_state(11, 2);
+        assert!(!states.restarted_since(baseline));
+        states.observe_state(12, 1);
+        states.observe_state(11, 2);
+        assert!(!states.restarted_since(baseline));
+        states.observe_state(13, 2);
+        assert!(states.restarted_since(baseline));
+        let next = states;
+        states.observe_state(12, 1);
+        states.observe_state(13, 2);
+        assert!(!states.restarted_since(next));
+    }
+
+    #[test]
+    fn invalid_or_duplicate_metadata_is_not_fresh() {
+        let (client, _) = client();
+        notify(&client, 10, CMD_NOTIFY_ACTIVE_CONFIGURATION, "invalid");
+        assert_eq!(client.observations.lock().unwrap().active_config, 0);
+        notify(
+            &client,
+            11,
+            CMD_NOTIFY_ACTIVE_CONFIGURATION,
+            r#"{"name":"Test"}"#,
+        );
+        notify(
+            &client,
+            10,
+            CMD_NOTIFY_ACTIVE_CONFIGURATION,
+            r#"{"name":"Old"}"#,
+        );
+        assert!(client.has_active_config("Test"));
+        assert_eq!(client.observations.lock().unwrap().active_config, 11);
+    }
+
+    #[test]
+    fn timeout_and_robot_errors_are_failures() {
+        let (client, _) = client();
+        let error = client
+            .wait_for(
+                "runtime restart",
+                Duration::from_millis(1),
+                || false,
+                || Ok(()),
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("timed out waiting for runtime restart"));
+        client.snapshot.write().unwrap().robot_error = Some("Hardware unavailable".into());
+        let error = client
+            .wait_for(
+                "runtime restart",
+                Duration::from_secs(1),
+                || true,
+                || Ok(()),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Hardware unavailable"));
+    }
+
+    #[test]
+    fn config_change_blocks_init_start_and_concurrent_changes() {
+        let (client, _) = client();
+        let _operation = client.operation.lock().unwrap();
+        assert!(client.snapshot().config_applying);
+        assert!(client.init_op_mode("Drive").is_err());
+        assert!(client.run_op_mode("Drive").is_err());
+        assert!(client.activate_config("Test").is_err());
+        assert!(client.save_config_xml("Test", "<Robot/>").is_err());
+    }
+
+    #[test]
+    fn fresh_emergency_stop_and_disconnect_fail_wait() {
+        let (client, _) = client();
+        notify(&client, 1, CMD_NOTIFY_ROBOT_STATE, "4");
+        let error = client
+            .wait_for("restart", Duration::from_secs(1), || true, || Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains("emergency stop"));
+        client.clear_robot_messages();
+        client.disconnect();
+        let error = client
+            .wait_for("restart", Duration::from_secs(1), || true, || Ok(()))
+            .unwrap_err();
+        assert!(error.to_string().contains("disconnected"));
+    }
+
+    fn config_flow(save: bool) {
+        let (client, robot) = client();
+        // Deliberately cache the same name/Running: neither proves application.
+        notify(
+            &client,
+            1,
+            CMD_NOTIFY_ACTIVE_CONFIGURATION,
+            r#"{"name":"Test"}"#,
+        );
+        notify(&client, 2, CMD_NOTIFY_ROBOT_STATE, "2");
+        let responder = client.clone();
+        let worker = thread::spawn(move || {
+            let mut timestamp = 10;
+            let mut restarted = false;
+            let mut saw_change = false;
+            let mut fresh = (false, false, false);
+            loop {
+                let mut buffer = [0; 8192];
+                let count = robot.recv(&mut buffer).unwrap();
+                let command = decode_command(&buffer[..count]).unwrap();
+                if command.acknowledged {
+                    continue;
+                }
+                timestamp += 1;
+                match command.name.as_str() {
+                    CMD_SAVE_CONFIGURATION | CMD_ACTIVATE_CONFIGURATION => {
+                        assert_eq!(command.name == CMD_SAVE_CONFIGURATION, save);
+                        saw_change = true;
+                    }
+                    CMD_RESTART_ROBOT => {
+                        assert!(saw_change);
+                        assert!(!restarted, "restart must only be requested once");
+                        notify(&responder, timestamp, CMD_NOTIFY_ROBOT_STATE, "1");
+                        timestamp += 1;
+                        notify(&responder, timestamp, CMD_NOTIFY_ROBOT_STATE, "2");
+                        restarted = true;
+                    }
+                    CMD_REQUEST_ACTIVE_CONFIG => {
+                        notify(
+                            &responder,
+                            timestamp,
+                            CMD_NOTIFY_ACTIVE_CONFIGURATION,
+                            r#"{"name":"Test"}"#,
+                        );
+                        if restarted {
+                            fresh.0 = true;
+                        }
+                    }
+                    CMD_REQUEST_OP_MODE_LIST => {
+                        assert!(restarted);
+                        notify(
+                            &responder,
+                            timestamp,
+                            CMD_NOTIFY_OP_MODE_LIST,
+                            r#"[{"name":"Drive"}]"#,
+                        );
+                        fresh.1 = true;
+                    }
+                    CMD_REQUEST_CONFIGURATIONS => {
+                        assert!(restarted);
+                        notify(
+                            &responder,
+                            timestamp,
+                            CMD_REQUEST_CONFIGURATIONS_RESP,
+                            r#"[{"name":"Test"}]"#,
+                        );
+                        fresh.2 = true;
+                    }
+                    _ => panic!("unexpected command {}", command.name),
+                }
+                if fresh == (true, true, true) {
+                    break;
+                }
+            }
+        });
+        if save {
+            client.save_config_xml("Test", "<Robot/>").unwrap();
+        } else {
+            client.activate_config("Test").unwrap();
+        }
+        worker.join().unwrap();
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.op_modes[0].name, "Drive");
+        assert_eq!(
+            snapshot.active_op_mode.as_deref(),
+            Some(DEFAULT_OP_MODE_NAME)
+        );
+        assert!(!snapshot.op_mode_running);
+    }
+
+    #[test]
+    fn activation_restarts_and_refreshes_hardware_metadata() {
+        config_flow(false);
+    }
+
+    #[test]
+    fn upload_restarts_even_when_overwriting_active_config() {
+        config_flow(true);
+    }
 }

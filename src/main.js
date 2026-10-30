@@ -6,6 +6,7 @@ const state = {
   snapshot: null,
   selectedOpMode: "",
   selectedConfig: "",
+  configApplying: false,
   timerStart: null,
   timerInterval: null,
   uploadXml: null,
@@ -251,12 +252,12 @@ elements.activateConfigBtn.addEventListener("click", async () => {
   const name = state.selectedConfig;
   await runAction(async () => {
     elements.activateConfigBtn.disabled = true;
-    setConfigMessage(`Activating ${name}...`);
+    setConfigMessage(`Applying ${name} and restarting robot...`);
     const result = await invoke("activate_config", { configName: name });
     const active = result.active_config?.name;
     state.configSignature = ""; // force dropdown rebuild so the * moves to the new active config
     if (active && active.toLowerCase() === name.toLowerCase()) {
-      setConfigMessage(`Activated ${active}`);
+      setConfigMessage(`Applied ${active}; robot runtime ready`);
     } else {
       setConfigMessage(`Activation sent for ${name}; active config is ${active ?? "unknown"}`);
     }
@@ -327,14 +328,14 @@ elements.uploadConfigBtn.addEventListener("click", async () => {
 
   await runAction(async () => {
     elements.uploadConfigBtn.disabled = true;
-    setConfigMessage(`Uploading and activating ${configName}...`);
+    setConfigMessage(`Uploading ${configName} and restarting robot...`);
     const result = await invoke("upload_config_xml", { configName, xml: state.uploadXml });
     const warnings = result.validation.warnings.length
       ? ` (${result.validation.warnings.join("; ")})`
       : "";
     state.selectedConfig = configName; // select the uploaded config in the dropdown
     state.configSignature = ""; // force dropdown rebuild so it picks up the new config
-    setConfigMessage(`Uploaded and activated ${configName}.${warnings}`);
+    setConfigMessage(`Uploaded ${configName}; robot runtime ready.${warnings}`);
     await invoke("refresh_robot");
     // Upload button stays disabled to confirm success; re-enabled when a new file is chosen.
   }, (message) => {
@@ -457,6 +458,13 @@ function renderSnapshot(snapshot) {
     statusText = "Connection lost — robot not responding";
   }
   setStatus(statusKind, statusText);
+  const wasApplying = state.configApplying;
+  state.configApplying = Boolean(snapshot.config_applying);
+  if (wasApplying && !state.configApplying) elements.uploadConfigBtn.disabled = !state.uploadName;
+  elements.uploadConfigInput.disabled = state.configApplying;
+  if (state.configApplying) elements.uploadConfigBtn.disabled = true;
+  updateConfigButtons();
+  if (active && state.configApplying) setStatus("working", "Applying configuration; restarting robot...");
   elements.robotState.textContent = snapshot.robot_state || "Unknown";
   elements.activeConfig.textContent = snapshot.active_config?.name ?? "None";
   elements.battery.textContent = formatBattery(snapshot.robot_battery);
@@ -533,6 +541,11 @@ function renderOpModes(opModes) {
 }
 
 function renderOpModeSelection(scrollSelected) {
+  const ready = Boolean(state.snapshot?.connected && !state.snapshot.peer_conflict
+    && !state.configApplying
+    && state.snapshot.op_modes?.some((mode) => mode.name === state.selectedOpMode));
+  elements.initBtn.disabled = !ready;
+  elements.startBtn.disabled = !ready;
   const rows = [...elements.opModeList.querySelectorAll("[data-opmode]")];
   for (const row of rows) {
     const selected = row.dataset.opmode === state.selectedOpMode;
@@ -564,7 +577,7 @@ function renderConfigs(configs, activeName) {
 }
 
 function updateConfigButtons() {
-  const hasSelection = Boolean(state.selectedConfig);
+  const hasSelection = Boolean(state.selectedConfig) && !state.configApplying;
   elements.downloadConfigBtn.disabled = !hasSelection;
   elements.activateConfigBtn.disabled = !hasSelection;
   elements.deleteConfigBtn.disabled = !hasSelection;
@@ -593,6 +606,10 @@ function renderTelemetry(lines) {
 }
 
 function renderDisconnected() {
+  state.configApplying = false;
+  elements.initBtn.disabled = true;
+  elements.startBtn.disabled = true;
+  elements.uploadConfigInput.disabled = false;
   setStatus("disconnected", "Disconnected");
   elements.shell.classList.add("stale");
   hideBanner();

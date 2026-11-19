@@ -162,10 +162,20 @@ const elements = {
 elements.connectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await runAction(async () => {
-    const snapshot = await invoke("connect_robot", { ip: elements.robotIp.value });
-    state.connected = true;
-    renderSnapshot(snapshot);
-    startPolling();
+    // A failed reconnect must not leave an old poller overwriting the error.
+    window.clearInterval(window.ftcPoller);
+    state.connected = false;
+    try {
+      const snapshot = await invoke("connect_robot", { ip: elements.robotIp.value });
+      state.connected = true;
+      renderSnapshot(snapshot);
+      startPolling();
+    } catch (error) {
+      state.snapshot = null;
+      stopTimer();
+      renderDisconnected();
+      throw error;
+    }
   });
 });
 

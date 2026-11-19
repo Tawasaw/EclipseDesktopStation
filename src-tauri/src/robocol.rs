@@ -44,6 +44,8 @@ pub enum RobocolError {
     InvalidAddress,
     #[error("network error: {0}")]
     Network(#[from] std::io::Error),
+    #[error("Cannot connect: UDP port {0} is already in use. Close other EclipseDesktopStation or Driver Station instances, then try Connect again. FTC robot replies require this port.")]
+    PortInUse(u16),
     #[error("timed out waiting for robot response")]
     Timeout,
     #[error("protocol error: {0}")]
@@ -156,7 +158,7 @@ impl RuntimeObservations {
 }
 
 pub struct RobocolClient {
-    socket: Arc<UdpSocket>,
+    socket: Mutex<Option<UdpSocket>>,
     peer: SocketAddr,
     sequence: AtomicU16,
     running: AtomicBool,
@@ -184,7 +186,7 @@ impl RobocolClient {
             }),
         );
         let client = Arc::new(Self {
-            socket: Arc::new(socket),
+            socket: Mutex::new(Some(socket)),
             peer: peer_addr,
             sequence: AtomicU16::new(0x4000),
             running: AtomicBool::new(true),
@@ -220,6 +222,9 @@ impl RobocolClient {
         self.log
             .record("disconnect", json!({ "peer": self.peer.to_string() }));
         self.running.store(false, Ordering::Relaxed);
+        // Worker threads retain the client Arc. Close the socket explicitly so
+        // reconnect can bind the required port before those threads exit.
+        self.socket.lock().expect("socket lock").take();
         if let Ok(mut snapshot) = self.snapshot.write() {
             snapshot.connected = false;
         }
@@ -501,7 +506,12 @@ impl RobocolClient {
         thread::spawn(move || {
             let mut buf = vec![0_u8; 65_520];
             while client.running.load(Ordering::Relaxed) {
-                match client.socket.recv_from(&mut buf) {
+                let received = {
+                    let socket = client.socket.lock().expect("socket lock");
+                    let Some(socket) = socket.as_ref() else { break };
+                    socket.recv_from(&mut buf)
+                };
+                match received {
                     Ok((len, addr)) => {
                         if addr.ip() == client.peer.ip() {
                             client.handle_datagram(&buf[..len]);
@@ -859,7 +869,11 @@ impl RobocolClient {
     }
 
     fn send_raw(&self, packet: &[u8]) -> Result<(), RobocolError> {
-        self.socket.send_to(packet, self.peer)?;
+        let socket = self.socket.lock().expect("socket lock");
+        let socket = socket.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotConnected, "robot disconnected")
+        })?;
+        socket.send_to(packet, self.peer)?;
         Ok(())
     }
 
@@ -876,9 +890,18 @@ impl RobocolClient {
 }
 
 fn bind_socket() -> Result<UdpSocket, RobocolError> {
-    match UdpSocket::bind(("0.0.0.0", ROBOCOL_PORT)) {
+    bind_required_socket(SocketAddr::from(([0, 0, 0, 0], ROBOCOL_PORT)))
+}
+
+fn bind_required_socket(address: SocketAddr) -> Result<UdpSocket, RobocolError> {
+    // The RC sends replies to the fixed Robocol port, not the source port.
+    // Falling back to an ephemeral port creates a session that cannot receive.
+    match UdpSocket::bind(address) {
         Ok(socket) => Ok(socket),
-        Err(_) => Ok(UdpSocket::bind(("0.0.0.0", 0))?),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            Err(RobocolError::PortInUse(address.port()))
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1093,7 +1116,7 @@ mod configuration_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let client = Arc::new(RobocolClient {
-            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap()),
+            socket: Mutex::new(Some(UdpSocket::bind("127.0.0.1:0").unwrap())),
             peer: robot.local_addr().unwrap(),
             sequence: AtomicU16::new(1),
             running: AtomicBool::new(true),
@@ -1108,6 +1131,40 @@ mod configuration_tests {
 
     fn notify(client: &RobocolClient, timestamp: i64, name: &str, extra: &str) {
         client.handle_command(&encode_command(1, timestamp, false, name, extra));
+    }
+
+    #[test]
+    fn occupied_port_returns_actionable_error_instead_of_falling_back() {
+        let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = occupied.local_addr().unwrap();
+        let error = bind_required_socket(address).unwrap_err();
+        assert!(matches!(error, RobocolError::PortInUse(port) if port == address.port()));
+        assert!(error.to_string().contains("already in use"));
+        assert!(error.to_string().contains("try Connect again"));
+        drop(occupied);
+        assert_eq!(
+            bind_required_socket(address).unwrap().local_addr().unwrap(),
+            address
+        );
+    }
+
+    #[test]
+    fn disconnect_releases_socket_even_while_workers_retain_client() {
+        let (client, _robot) = client();
+        let address = client
+            .socket
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let worker_reference = Arc::clone(&client);
+        client.disconnect();
+        let rebound = bind_required_socket(address).unwrap();
+        assert_eq!(rebound.local_addr().unwrap(), address);
+        assert!(worker_reference.send_raw(&[1, 2, 3]).is_err());
+        client.disconnect(); // Closing twice is harmless.
     }
 
     #[test]

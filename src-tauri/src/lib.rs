@@ -84,13 +84,19 @@ fn connect_robot(state: State<'_, AppState>, ip: String) -> Result<RobotSnapshot
     state
         .log
         .record("ui_connect", serde_json::json!({ "ip": ip.trim() }));
-    let client =
-        RobocolClient::connect(ip.trim(), Arc::clone(&state.log)).map_err(|err| err.to_string())?;
-    let snapshot = client.snapshot();
     let mut guard = state.client.lock().expect("client lock");
     if let Some(previous) = guard.take() {
         previous.disconnect();
     }
+    // Serialize replacement and release port 20884 before opening a new client.
+    let client = RobocolClient::connect(ip.trim(), Arc::clone(&state.log)).map_err(|err| {
+        state.log.record(
+            "connect_error",
+            serde_json::json!({ "error": err.to_string() }),
+        );
+        err.to_string()
+    })?;
+    let snapshot = client.snapshot();
     *guard = Some(client);
     Ok(snapshot)
 }

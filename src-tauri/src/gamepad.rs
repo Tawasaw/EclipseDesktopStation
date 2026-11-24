@@ -1,5 +1,5 @@
 use crate::debug_log::SessionLog;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -21,8 +21,15 @@ const AT_REST_RESEND_MS: i64 = 1000;
 /// How many zeroed packets to send for a user slot that loses its gamepad, so
 /// the robot doesn't keep acting on the last stick position.
 const NEUTRAL_REPEATS: u8 = 3;
+/// Name shown for the on-screen, keyboard-driven gamepad.
+const VIRTUAL_NAME: &str = "Virtual F310 (keyboard)";
+/// The UI refreshes the virtual gamepad several times a second while it is
+/// open. If it goes quiet this long (window hung, webview reloaded), zero the
+/// gamepad so the robot doesn't keep driving on a held key.
+const VIRTUAL_TIMEOUT_MS: i64 = 500;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GamepadState {
     pub left_stick_x: f32,
     pub left_stick_y: f32,
@@ -56,6 +63,25 @@ impl GamepadState {
             && self.right_stick_y == 0.0
             && self.left_trigger == 0.0
             && self.right_trigger == 0.0
+    }
+
+    /// Clamp values from untrusted sources (the UI) to the ranges the SDK
+    /// expects; non-finite values become 0.
+    fn sanitized(mut self) -> Self {
+        let clamp = |value: f32, min: f32| {
+            if value.is_finite() {
+                value.clamp(min, 1.0)
+            } else {
+                0.0
+            }
+        };
+        self.left_stick_x = clamp(self.left_stick_x, -1.0);
+        self.left_stick_y = clamp(self.left_stick_y, -1.0);
+        self.right_stick_x = clamp(self.right_stick_x, -1.0);
+        self.right_stick_y = clamp(self.right_stick_y, -1.0);
+        self.left_trigger = clamp(self.left_trigger, 0.0);
+        self.right_trigger = clamp(self.right_trigger, 0.0);
+        self
     }
 
     /// Button bitfield in `toByteArray()` order: right_bumper is bit 0, the
@@ -214,6 +240,12 @@ struct NeutralPacket {
     remaining: u8,
 }
 
+struct VirtualPad {
+    id: i32,
+    /// Monotonic ms of the last update from the UI.
+    seen_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GamepadInfo {
     pub id: i32,
@@ -221,6 +253,8 @@ pub struct GamepadInfo {
     /// 1 = gamepad1, 2 = gamepad2, None = not sending to the robot.
     pub user: Option<u8>,
     pub state: GamepadState,
+    /// True for the on-screen keyboard gamepad.
+    pub is_virtual: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,26 +268,90 @@ pub struct GamepadManager {
     neutral: Mutex<Vec<NeutralPacket>>,
     /// User-facing problems, keyed by the backend that reported them.
     notices: Mutex<BTreeMap<&'static str, String>>,
+    virtual_pad: Mutex<Option<VirtualPad>>,
     next_id: AtomicI32,
     log: Arc<SessionLog>,
 }
 
 impl GamepadManager {
     pub fn start(log: Arc<SessionLog>) -> Arc<Self> {
-        let manager = Arc::new(Self {
-            pads: Mutex::new(Vec::new()),
-            neutral: Mutex::new(Vec::new()),
-            notices: Mutex::new(BTreeMap::new()),
-            next_id: AtomicI32::new(1),
-            log,
-        });
+        let manager = Arc::new(Self::new(log));
         system::spawn(Arc::clone(&manager));
         #[cfg(target_os = "macos")]
         xinput_usb::spawn(Arc::clone(&manager));
         manager
     }
 
+    fn new(log: Arc<SessionLog>) -> Self {
+        Self {
+            pads: Mutex::new(Vec::new()),
+            neutral: Mutex::new(Vec::new()),
+            notices: Mutex::new(BTreeMap::new()),
+            virtual_pad: Mutex::new(None),
+            next_id: AtomicI32::new(1),
+            log,
+        }
+    }
+
+    /// Attach the on-screen keyboard gamepad (or return the one already
+    /// attached). It takes a free gamepad1/gamepad2 slot like a USB gamepad.
+    pub fn open_virtual(&self) -> i32 {
+        let mut slot = self.virtual_pad.lock().expect("virtual lock");
+        if let Some(pad) = slot.as_mut() {
+            pad.seen_ms = monotonic_ms();
+            return pad.id;
+        }
+        let id = self.add_pad(VIRTUAL_NAME, false);
+        *slot = Some(VirtualPad {
+            id,
+            seen_ms: monotonic_ms(),
+        });
+        id
+    }
+
+    /// Set the virtual gamepad's state. The UI calls this on every change and
+    /// as a heartbeat while the virtual gamepad is open.
+    pub fn update_virtual(&self, state: GamepadState) -> Result<(), String> {
+        let id = {
+            let mut slot = self.virtual_pad.lock().expect("virtual lock");
+            let pad = slot
+                .as_mut()
+                .ok_or_else(|| "virtual gamepad is not open".to_string())?;
+            pad.seen_ms = monotonic_ms();
+            pad.id
+        };
+        self.update_pad(id, state.sanitized());
+        Ok(())
+    }
+
+    /// Detach the virtual gamepad; its slot gets the usual neutral packets.
+    pub fn close_virtual(&self) {
+        let pad = self.virtual_pad.lock().expect("virtual lock").take();
+        if let Some(pad) = pad {
+            self.remove_pad(pad.id);
+        }
+    }
+
+    /// Zero the virtual gamepad if the UI stopped refreshing it.
+    fn expire_virtual(&self, now: i64) {
+        let stale = {
+            let slot = self.virtual_pad.lock().expect("virtual lock");
+            slot.as_ref()
+                .filter(|pad| now - pad.seen_ms > VIRTUAL_TIMEOUT_MS)
+                .map(|pad| pad.id)
+        };
+        if let Some(id) = stale {
+            self.update_pad(id, GamepadState::default());
+        }
+    }
+
     pub fn status(&self) -> GamepadStatus {
+        let virtual_id = self
+            .virtual_pad
+            .lock()
+            .expect("virtual lock")
+            .as_ref()
+            .map(|pad| pad.id);
         let notices = self.notices.lock().expect("notices lock");
         let pads = self.pads.lock().expect("pads lock");
         GamepadStatus {
@@ -266,6 +364,7 @@ impl GamepadManager {
                     name: pad.name.clone(),
                     user: pad.user,
                     state: pad.state,
+                    is_virtual: Some(pad.id) == virtual_id,
                 })
                 .collect(),
         }
@@ -290,6 +389,7 @@ impl GamepadManager {
     /// tick unless the gamepad has been at rest for over a second.
     pub fn take_transmissions(&self) -> Vec<Vec<u8>> {
         let now = monotonic_ms();
+        self.expire_virtual(now);
         let mut payloads = Vec::new();
         {
             let mut neutral = self.neutral.lock().expect("neutral lock");
@@ -699,6 +799,42 @@ mod tests {
         assert_eq!(state.left_stick_y, -1.0);
         assert_eq!(state.right_trigger, 1.0);
         assert_eq!(state.left_stick_x, 0.0);
+    }
+
+    #[test]
+    fn virtual_gamepad_lifecycle() {
+        let manager = GamepadManager::new(Arc::new(SessionLog::new()));
+        assert!(manager.update_virtual(GamepadState::default()).is_err());
+        let id = manager.open_virtual();
+        assert_eq!(manager.open_virtual(), id, "opening twice reuses the pad");
+        let status = manager.status();
+        assert_eq!(status.pads.len(), 1);
+        assert!(status.pads[0].is_virtual);
+        assert_eq!(status.pads[0].user, Some(1));
+
+        let driving = GamepadState {
+            left_stick_y: -3.0,
+            right_trigger: f32::NAN,
+            a: true,
+            ..GamepadState::default()
+        };
+        manager.update_virtual(driving).unwrap();
+        let state = manager.status().pads[0].state;
+        assert_eq!(state.left_stick_y, -1.0);
+        assert_eq!(state.right_trigger, 0.0);
+        assert!(state.a);
+        assert_eq!(manager.take_transmissions().len(), 1);
+
+        // No heartbeat from the UI: the pad is zeroed.
+        manager.expire_virtual(monotonic_ms() + VIRTUAL_TIMEOUT_MS + 1);
+        assert_eq!(manager.status().pads[0].state, GamepadState::default());
+
+        manager.close_virtual();
+        assert!(manager.status().pads.is_empty());
+        // Neutral packets for the freed gamepad1 slot.
+        let sent = manager.take_transmissions();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0][41], 1);
     }
 
     #[test]

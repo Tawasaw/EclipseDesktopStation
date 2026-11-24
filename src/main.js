@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import { createVirtualGamepad } from "./virtualGamepad.js";
 
 const state = {
   connected: false,
@@ -75,6 +76,7 @@ app.innerHTML = `
       <h2>Gamepads</h2>
       <div id="gamepadList" class="gamepad-list"></div>
       <p id="gamepadNotice" class="message"></p>
+      <button id="virtualPadBtn" type="button" title="Drive with the keyboard using an on-screen gamepad">Virtual gamepad</button>
     </section>
 
     <section class="workspace">
@@ -157,7 +159,20 @@ const elements = {
   logToggle: document.querySelector("#logToggle"),
   gamepadList: document.querySelector("#gamepadList"),
   gamepadNotice: document.querySelector("#gamepadNotice"),
+  virtualPadBtn: document.querySelector("#virtualPadBtn"),
 };
+
+const virtualPad = createVirtualGamepad({ invoke, onStatus: renderGamepads });
+
+elements.virtualPadBtn.addEventListener("click", async () => {
+  try {
+    await virtualPad.toggle();
+  } catch (error) {
+    elements.gamepadNotice.textContent = String(error);
+  }
+  // Release focus so Space/Enter drive the gamepad instead of re-clicking this button.
+  elements.virtualPadBtn.blur();
+});
 
 elements.connectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -375,12 +390,17 @@ function pollGamepads() {
 
 function renderGamepads(status) {
   elements.gamepadNotice.textContent = status.notice ?? "";
+  virtualPad.syncStatus(status);
+  // Only touch the label when it changes: this runs every 100 ms, and WebKit
+  // drops a click if the text node under the pointer is replaced mid-press.
+  const label = virtualPad.isOpen() ? "Close virtual gamepad" : "Virtual gamepad";
+  if (elements.virtualPadBtn.textContent !== label) elements.virtualPadBtn.textContent = label;
   const pads = status.pads ?? [];
   const signature = pads.map((pad) => `${pad.id}:${pad.user}`).join("|");
   if (signature !== state.gamepadSignature) {
     state.gamepadSignature = signature;
     if (!pads.length) {
-      elements.gamepadList.innerHTML = `<span class="empty">No gamepad. Plug one in over USB.</span>`;
+      elements.gamepadList.innerHTML = `<span class="empty">No gamepad. Plug one in over USB, or open the virtual gamepad.</span>`;
     } else {
       elements.gamepadList.replaceChildren(
         ...pads.map((pad) => {

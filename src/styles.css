@@ -597,3 +597,266 @@ button:disabled {
     display: grid;
   }
 }
+
+/* ---- Virtual gamepad ---------------------------------------------------- */
+
+.gamepad-bar {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+#virtualPadBtn {
+  min-height: 30px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.vpad-window {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  width: 560px;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #d9371e;
+  border-radius: 10px;
+  background: #1f1f22;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.vpad-window.hidden {
+  display: none;
+}
+
+.vpad-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  background: #390006;
+  cursor: move;
+  user-select: none;
+}
+
+.vpad-status {
+  flex: 1;
+  font-size: 12px;
+  color: #9fe3a4;
+}
+
+.vpad-status[data-kind="warn"] {
+  color: #ffd35c;
+}
+
+.vpad-close {
+  min-height: 26px;
+  width: 28px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.vpad-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 6px 10px 0;
+  background: radial-gradient(ellipse at 50% 40%, #33343a, #1f1f22 70%);
+  touch-action: none;
+  user-select: none;
+}
+
+.vpad-svg text {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.vp-body circle,
+.vp-body rect {
+  fill: #4b5a74;
+}
+
+.vp-grip {
+  fill: #121316;
+  stroke: #3a3e47;
+  stroke-width: 2;
+}
+
+.vp-ring {
+  fill: #55647e;
+}
+
+.vp-well {
+  fill: #3c475c;
+}
+
+.vp-dpad-base {
+  fill: #17181b;
+}
+
+.vp-dpad-arm {
+  fill: #2c2e33;
+  cursor: pointer;
+}
+
+.vp-dpad-center {
+  fill: #25272b;
+  pointer-events: none;
+}
+
+.vp-small {
+  fill: #2b2f36;
+  stroke: #1d2026;
+  stroke-width: 2;
+}
+
+.vp-ctl .vp-small {
+  cursor: pointer;
+}
+
+.vp-inert {
+  opacity: 0.7;
+}
+
+.vp-led {
+  fill: #2a3f2a;
+}
+
+.vp-label {
+  fill: #c8cfdb;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.vp-hint {
+  fill: #ffb08f;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: ui-monospace, Menlo, monospace !important;
+}
+
+.vp-face {
+  cursor: pointer;
+}
+
+.vp-face-well {
+  fill: #39445a;
+}
+
+.vp-face-letter {
+  fill: rgba(255, 255, 255, 0.85);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.vp-badge rect {
+  fill: #dfe4ea;
+  cursor: pointer;
+}
+
+.vp-badge-title {
+  fill: #4b5a74;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.vp-badge-sub {
+  fill: #4b5a74;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.vp-trigger {
+  fill: #2a2d33;
+  cursor: pointer;
+}
+
+.vp-trigger-fill {
+  fill: #ff5a2a;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.vp-bumper {
+  fill: #33373e;
+  stroke: #1d2026;
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+.vp-stick {
+  cursor: grab;
+}
+
+.vp-stick-base {
+  fill: #22242a;
+}
+
+.vp-stick-cap {
+  fill: #2f3137;
+}
+
+.vp-stick-top {
+  fill: #393b42;
+  pointer-events: none;
+}
+
+/* Pressed: outline the control in the app's accent color. */
+.vp-press {
+  transition: stroke 60ms;
+}
+
+.vp-ctl.on .vp-press,
+.vp-ctl.on.vp-press {
+  stroke: #ff7a4a;
+  stroke-width: 4;
+}
+
+.vp-ctl.on .vp-small,
+.vp-ctl.on .vp-bumper,
+.vp-ctl.on.vp-dpad-arm,
+.vp-stick.on .vp-stick-cap {
+  fill: #5a3a30;
+}
+
+.vp-face.on .vp-press {
+  stroke: #fff;
+}
+
+.vpad-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+  margin: 0;
+  padding: 8px 14px 12px;
+  font-size: 12px;
+}
+
+.vpad-legend div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vpad-legend dt {
+  color: #c9c3bd;
+}
+
+.vpad-legend dd {
+  margin: 0;
+  color: #f6f3ef;
+  text-align: right;
+}
+
+.vpad-legend kbd {
+  font-family: ui-monospace, Menlo, monospace;
+  color: #ffb08f;
+}
+
+.vpad-legend span {
+  color: #9a948f;
+}

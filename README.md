@@ -33,6 +33,14 @@ practice and diagnostics — **not for official competition use**.
   - The first controller is assigned to gamepad1 automatically and a second one to
     gamepad2. Reassign from the Gamepads bar, or hold **Start** and press **A**
     (gamepad1) or **B** (gamepad2), as on the Driver Hub.
+  - No controller? Click **Virtual gamepad** in the Gamepads bar to open an
+    on-screen F310-style gamepad you drive from the keyboard (or by clicking
+    and dragging its controls). It is assigned like a USB gamepad. Keys: left
+    stick **WASD** (click **F**), right stick **IJKL** (click **H**), D-pad
+    **arrow keys**, A/B/X/Y **Space/B/X/Y**, LB/LT **Q/E**, RB/RT **O/U**,
+    Back/Start **Backspace/Enter**, Guide **G**, hold **Shift** for half
+    travel. Keys are ignored while typing in a text field, and everything is
+    released when the app loses focus.
 - JSONL session logs (opt-in) for field debugging — disabled by default,
   enabled via a checkbox by the IP box.
 

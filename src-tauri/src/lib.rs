@@ -7,7 +7,7 @@ mod robocol;
 mod xml_config;
 
 use debug_log::SessionLog;
-use gamepad::{GamepadManager, GamepadStatus};
+use gamepad::{GamepadManager, GamepadState, GamepadStatus};
 use robocol::{RobocolClient, RobotSnapshot};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -277,6 +277,29 @@ fn set_gamepad_user(
 }
 
 #[tauri::command]
+fn open_virtual_gamepad(state: State<'_, AppState>) -> GamepadStatus {
+    state
+        .log
+        .record("ui_open_virtual_gamepad", serde_json::json!({}));
+    state.gamepads.open_virtual();
+    state.gamepads.status()
+}
+
+#[tauri::command]
+fn update_virtual_gamepad(state: State<'_, AppState>, pad: GamepadState) -> Result<(), String> {
+    state.gamepads.update_virtual(pad)
+}
+
+#[tauri::command]
+fn close_virtual_gamepad(state: State<'_, AppState>) -> GamepadStatus {
+    state
+        .log
+        .record("ui_close_virtual_gamepad", serde_json::json!({}));
+    state.gamepads.close_virtual();
+    state.gamepads.status()
+}
+
+#[tauri::command]
 fn get_log_path(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.log.path_string())
 }
@@ -328,6 +351,9 @@ pub fn run() {
             clear_robot_message,
             get_gamepads,
             set_gamepad_user,
+            open_virtual_gamepad,
+            update_virtual_gamepad,
+            close_virtual_gamepad,
             get_log_path,
             set_logging,
             get_app_version
